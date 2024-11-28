@@ -24,11 +24,14 @@ from keystone import config
 from keystone import exception
 from keystone import policy
 from keystone import token
+from keystone.common import logging
 from keystone.common import manager
 from keystone.common import wsgi
 
 
 CONF = config.CONF
+
+LOG = logging.getLogger(__name__)
 
 
 class Manager(manager.Manager):
@@ -405,6 +408,17 @@ class UserController(wsgi.Application):
             raise exception.UserNotFound(user_id=user_id)
 
         user_ref = self.identity_api.update_user(context, user_id, user)
+
+        # If the password was changed or the user was disabled we clear tokens
+        if user.get('password') or user.get('enabled', True) == False:
+            try:
+                for token_id in self.token_api.list_tokens(context, user_id):
+                    self.token_api.delete_token(context, token_id)
+            except exception.NotImplemented:
+                # The users status has been changed but tokens remain valid for
+                # backends that can't list tokens for users
+                LOG.warning('User %s status has changed, but existing tokens '
+                            'remain valid' % user_id)
         return {'user': user_ref}
 
     def delete_user(self, context, user_id):
@@ -422,6 +436,7 @@ class UserController(wsgi.Application):
 
     def update_user_tenant(self, context, user_id, user):
         """Update the default tenant."""
+        self.assert_admin(context)
         # ensure that we're a member of that tenant
         tenant_id = user.get('tenantId')
         self.identity_api.add_user_to_tenant(context, tenant_id, user_id)
@@ -443,6 +458,7 @@ class RoleController(wsgi.Application):
         not implementing them in hopes that the idea will die off.
 
         """
+        self.assert_admin(context)
         if tenant_id is None:
             raise exception.NotImplemented(message='User roles not supported: '
                                                    'tenant ID required')
