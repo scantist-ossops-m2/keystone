@@ -436,6 +436,7 @@ class UserController(wsgi.Application):
 
     def update_user_tenant(self, context, user_id, user):
         """Update the default tenant."""
+        self.assert_admin(context)
         # ensure that we're a member of that tenant
         tenant_id = user.get('tenantId')
         self.identity_api.add_user_to_tenant(context, tenant_id, user_id)
@@ -457,6 +458,7 @@ class RoleController(wsgi.Application):
         not implementing them in hopes that the idea will die off.
 
         """
+        self.assert_admin(context)
         if tenant_id is None:
             raise exception.NotImplemented(message='User roles not supported: '
                                                    'tenant ID required')
