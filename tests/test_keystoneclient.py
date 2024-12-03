@@ -14,6 +14,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import time
 import uuid
 
 import nose.exc
@@ -175,6 +176,53 @@ class KeystoneClientTests(object):
                           self.get_client,
                           user_ref)
 
+    def test_authenticate_disabled_tenant(self):
+        from keystoneclient import exceptions as client_exceptions
+
+        admin_client = self.get_client(admin=True)
+
+        tenant = {
+            'name': uuid.uuid4().hex,
+            'description': uuid.uuid4().hex,
+            'enabled': False,
+        }
+        tenant_ref = admin_client.tenants.create(
+            tenant_name=tenant['name'],
+            description=tenant['description'],
+            enabled=tenant['enabled'])
+        tenant['id'] = tenant_ref.id
+
+        user = {
+            'name': uuid.uuid4().hex,
+            'password': uuid.uuid4().hex,
+            'email': uuid.uuid4().hex,
+            'tenant_id': tenant['id'],
+        }
+        user_ref = admin_client.users.create(
+            name=user['name'],
+            password=user['password'],
+            email=user['email'],
+            tenant_id=user['tenant_id'])
+        user['id'] = user_ref.id
+
+        # password authentication
+        self.assertRaises(
+            client_exceptions.Unauthorized,
+            self._client,
+            username=user['name'],
+            password=user['password'],
+            tenant_id=tenant['id'])
+
+        # token authentication
+        client = self._client(
+            username=user['name'],
+            password=user['password'])
+        self.assertRaises(
+            client_exceptions.Unauthorized,
+            self._client,
+            token=client.auth_token,
+            tenant_id=tenant['id'])
+
     # FIXME(ja): this test should require the "keystone:admin" roled
     #            (probably the role set via --keystone_admin_role flag)
     # FIXME(ja): add a test that admin endpoint is only sent to admin user
@@ -286,6 +334,57 @@ class KeystoneClientTests(object):
                           username='blah',
                           password='blah')
 
+    def test_change_password_invalidates_token(self):
+        from keystoneclient import exceptions as client_exceptions
+
+        client = self.get_client(admin=True)
+
+        username = uuid.uuid4().hex
+        passwd = uuid.uuid4().hex
+        user = client.users.create(name=username, password=passwd,
+                                   email=uuid.uuid4().hex)
+
+        token_id = client.tokens.authenticate(username=username,
+                                              password=passwd).id
+
+        # authenticate with a token should work before a password change
+        client.tokens.authenticate(token=token_id)
+
+        client.users.update_password(user=user.id, password=uuid.uuid4().hex)
+
+        # authenticate with a token should not work after a password change
+        self.assertRaises(client_exceptions.Unauthorized,
+                          client.tokens.authenticate,
+                          token=token_id)
+
+    def test_disable_user_invalidates_token(self):
+        from keystoneclient import exceptions as client_exceptions
+
+        admin_client = self.get_client(admin=True)
+        foo_client = self.get_client(self.user_foo)
+
+        admin_client.users.update_enabled(user=self.user_foo['id'],
+                                          enabled=False)
+
+        self.assertRaises(client_exceptions.Unauthorized,
+                          foo_client.tokens.authenticate,
+                          token=foo_client.auth_token)
+
+        self.assertRaises(client_exceptions.Unauthorized,
+                          self.get_client,
+                          self.user_foo)
+
+    def test_token_expiry_maintained(self):
+        foo_client = self.get_client(self.user_foo)
+        orig_token = foo_client.service_catalog.catalog['token']
+
+        time.sleep(1.01)
+        reauthenticated_token = foo_client.tokens.authenticate(
+                                    token=foo_client.auth_token)
+
+        self.assertEquals(orig_token['expires'],
+                          reauthenticated_token.expires)
+
     def test_user_create_update_delete(self):
         from keystoneclient import exceptions as client_exceptions
 
@@ -309,7 +408,7 @@ class KeystoneClientTests(object):
         user = client.users.get(user.id)
         self.assertFalse(user.enabled)
 
-        self.assertRaises(client_exceptions.AuthorizationFailure,
+        self.assertRaises(client_exceptions.Unauthorized,
                   self._client,
                   username=test_username,
                   password='password')
@@ -848,7 +947,7 @@ class KcEssex3TestCase(CompatTestCase, KeystoneClientTests):
         user = client.users.get(user.id)
         self.assertFalse(user.enabled)
 
-        self.assertRaises(client_exceptions.AuthorizationFailure,
+        self.assertRaises(client_exceptions.Unauthorized,
                   self._client,
                   username=test_username,
                   password='password')
